@@ -51,15 +51,17 @@ def upload_images(file_list, access_token):
     for i, file_obj in enumerate(file_list):
         status_text.text(f"正在上传第 {i + 1}/{len(file_list)} 张图片...")
         
-        # === 关键修正 1：参数构造方式 ===
-        # 必须将元数据放在 data 中，文件流放在 files 中，且 key 必须是 'file'
+        # === 核心修正 ===
         data_payload = {
             'parent_type': 'bitable_image',
             'parent_node': st.secrets["feishu"]["app_token"],
-            'size': file_obj.size
+            'size': str(file_obj.size)  # ❌ 之前是数字，必须转为字符串！
         }
+        
+        # 为了防止中文文件名在 HTTP 传输中乱码导致 params error，
+        # 我们在传输层统一命名为 "image.png/jpg"，飞书主要看 file_obj 的内容
         files_payload = {
-            'file': (file_obj.name, file_obj, file_obj.type) # Key 必须是 'file'
+            'file': ("image_upload", file_obj, file_obj.type) 
         }
         
         try:
@@ -68,7 +70,9 @@ def upload_images(file_list, access_token):
             if res.get("code") == 0:
                 tokens.append({"file_token": res["data"]["file_token"]})
             else:
-                st.warning(f"图片 {file_obj.name} 上传失败: {res.get('msg')}")
+                # 打印出具体的错误信息以便调试
+                st.warning(f"图片上传失败: {res}")
+                print(f"DEBUG Error: {res}") 
         except Exception as e:
             st.error(f"网络错误: {e}")
             
@@ -166,3 +170,4 @@ with st.form("gauge_form", clear_on_submit=True):
                         st.balloons()
                     else:
                         st.error(f"❌ 提交失败: {res.get('msg')}")
+
