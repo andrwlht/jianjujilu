@@ -1,5 +1,5 @@
 import streamlit as st
-import datetime
+import time  # 导入 time 库用于生成时间戳
 import requests
 import json
 
@@ -16,12 +16,13 @@ st.markdown("""<style>
 st.title("🛠️ 检具修改录入系统")
 
 
-# === 2. 飞书 API 工具函数 (保持不变) ===
+# === 2. 飞书 API 工具函数 ===
 
 def get_feishu_token():
     """获取飞书访问凭证"""
     url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
     headers = {"Content-Type": "application/json; charset=utf-8"}
+    # 从 secrets 获取配置
     data = {
         "app_id": st.secrets["feishu"]["app_id"],
         "app_secret": st.secrets["feishu"]["app_secret"]
@@ -42,35 +43,48 @@ def upload_images(file_list, access_token):
     tokens = []
     upload_url = "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all"
     headers = {"Authorization": f"Bearer {access_token}"}
-
-    progress_text = st.empty()
+    
+    # 进度条
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
     for i, file_obj in enumerate(file_list):
-        progress_text.text(f"正在上传第 {i + 1}/{len(file_list)} 张图片...")
-        files = {
-            'file_name': ('image.jpg', file_obj, file_obj.type),
-            'parent_type': (None, 'bitable_image'),
-            'parent_node': (None, st.secrets["feishu"]["app_token"]),
-            'size': (None, str(file_obj.size))
+        status_text.text(f"正在上传第 {i + 1}/{len(file_list)} 张图片...")
+        
+        # === 关键修正 1：参数构造方式 ===
+        # 必须将元数据放在 data 中，文件流放在 files 中，且 key 必须是 'file'
+        data_payload = {
+            'parent_type': 'bitable_image',
+            'parent_node': st.secrets["feishu"]["app_token"],
+            'size': file_obj.size
         }
+        files_payload = {
+            'file': (file_obj.name, file_obj, file_obj.type) # Key 必须是 'file'
+        }
+        
         try:
-            r = requests.post(upload_url, headers=headers, files=files)
+            r = requests.post(upload_url, headers=headers, data=data_payload, files=files_payload)
             res = r.json()
             if res.get("code") == 0:
                 tokens.append({"file_token": res["data"]["file_token"]})
             else:
-                st.warning(f"图片上传失败: {res.get('msg')}")
-        except Exception:
-            pass
+                st.warning(f"图片 {file_obj.name} 上传失败: {res.get('msg')}")
+        except Exception as e:
+            st.error(f"网络错误: {e}")
+            
+        # 更新进度
+        progress_bar.progress((i + 1) / len(file_list))
 
-    progress_text.empty()
+    time.sleep(0.5)
+    progress_bar.empty()
+    status_text.empty()
     return tokens
 
 
 def submit_to_feishu(data_fields):
     """提交数据"""
     token = get_feishu_token()
-    if not token: return False
+    if not token: return {"code": -1, "msg": "Token获取失败"}
 
     app_token = st.secrets["feishu"]["app_token"]
     table_id = st.secrets["feishu"]["table_id"]
@@ -86,11 +100,10 @@ def submit_to_feishu(data_fields):
     return r.json()
 
 
-# === 3. 数据录入表单 (已更新) ===
+# === 3. 数据录入表单 ===
 with st.form("gauge_form", clear_on_submit=True):
     st.subheader("📝 基础信息")
 
-    # 👇 更新点：改为3列布局，加入记录人
     col1, col2, col3 = st.columns(3)
     with col1:
         model = st.text_input("检具型号", placeholder="必填，如 T-2025")
@@ -99,7 +112,6 @@ with st.form("gauge_form", clear_on_submit=True):
     with col3:
         recorder = st.text_input("记录人", placeholder="必填，请输入姓名")
 
-    # 修改说明区域
     desc = st.text_area("修改位置及说明", height=100, placeholder="请详细描述修改内容...")
 
     st.write("---")
@@ -108,19 +120,16 @@ with st.form("gauge_form", clear_on_submit=True):
     col_before, col_after = st.columns(2)
     with col_before:
         st.write("🔻 **修改前 (Before)**")
-        files_before = st.file_uploader("上传修改前", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True,
-                                        key="before")
+        files_before = st.file_uploader("上传修改前", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True, key="before")
 
     with col_after:
         st.write("✅ **修改后 (After)**")
-        files_after = st.file_uploader("上传修改后", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True,
-                                       key="after")
+        files_after = st.file_uploader("上传修改后", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True, key="after")
 
     st.write("")
     submitted = st.form_submit_button("🚀 提交记录")
 
     if submitted:
-        # 👇 校验逻辑增加“记录人”
         if not model:
             st.warning("⚠️ 请填写【检具型号】")
         elif not recorder:
@@ -131,16 +140,20 @@ with st.form("gauge_form", clear_on_submit=True):
             with st.spinner("正在同步数据到飞书..."):
                 token = get_feishu_token()
                 if token:
+                    # 上传图片
                     tokens_before = upload_images(files_before, token)
                     tokens_after = upload_images(files_after, token)
 
-                    # 👇 组装数据，增加“记录人”字段
+                    # === 关键修正 2：日期时间处理 ===
+                    # 使用毫秒级时间戳，防止 DatetimeFieldConvFail 错误
+                    current_timestamp = int(time.time() * 1000)
+
                     fields = {
                         "检具型号": model,
                         "物料编号": mat_num if mat_num else "-",
-                        "记录人": recorder,  # 新增字段
+                        "记录人": recorder,
                         "修改说明": desc,
-                        "提交时间": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        "提交时间": current_timestamp  # 传数字，飞书自动转日期
                     }
 
                     if tokens_before: fields["修改前图片"] = tokens_before
