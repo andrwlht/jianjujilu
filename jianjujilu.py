@@ -44,39 +44,44 @@ def upload_images(file_list, access_token):
     upload_url = "https://open.feishu.cn/open-apis/drive/v1/medias/upload_all"
     headers = {"Authorization": f"Bearer {access_token}"}
     
-    # 进度条
     progress_bar = st.progress(0)
     status_text = st.empty()
 
     for i, file_obj in enumerate(file_list):
         status_text.text(f"正在上传第 {i + 1}/{len(file_list)} 张图片...")
         
-        # === 核心修正 ===
+        # 1. 安全措施：重置文件指针，防止文件被读取过导致上传为空
+        file_obj.seek(0)
+        
+        # 2. 构造普通的表单字段
+        # 注意：file_name 是必填的，必须在这里也传一份！
         data_payload = {
-            'parent_type': 'bitable_image',
-            'parent_node': st.secrets["feishu"]["app_token"],
-            'size': str(file_obj.size)  # ❌ 之前是数字，必须转为字符串！
+            'file_name': file_obj.name,            # ✅ 必须包含文件名
+            'parent_type': 'bitable_image',        # ✅ 固定值
+            'parent_node': st.secrets["feishu"]["app_token"], # ✅ 必须是 Base Token
+            'size': str(file_obj.size)             # ✅ 必须是字符串格式的大小
         }
         
-        # 为了防止中文文件名在 HTTP 传输中乱码导致 params error，
-        # 我们在传输层统一命名为 "image.png/jpg"，飞书主要看 file_obj 的内容
+        # 3. 构造文件字段
         files_payload = {
-            'file': ("image_upload", file_obj, file_obj.type) 
+            'file': (file_obj.name, file_obj, file_obj.type)
         }
         
         try:
+            # 打印调试信息 (可选)
+            # print(f"Uploading {file_obj.name}, size: {file_obj.size}")
+            
             r = requests.post(upload_url, headers=headers, data=data_payload, files=files_payload)
             res = r.json()
+            
             if res.get("code") == 0:
                 tokens.append({"file_token": res["data"]["file_token"]})
             else:
-                # 打印出具体的错误信息以便调试
-                st.warning(f"图片上传失败: {res}")
-                print(f"DEBUG Error: {res}") 
+                st.error(f"❌ 图片 {file_obj.name} 上传失败: {res}")
+                # 如果失败，通常是因为 parent_node (app_token) 不对，或者权限不够
         except Exception as e:
             st.error(f"网络错误: {e}")
             
-        # 更新进度
         progress_bar.progress((i + 1) / len(file_list))
 
     time.sleep(0.5)
@@ -170,4 +175,5 @@ with st.form("gauge_form", clear_on_submit=True):
                         st.balloons()
                     else:
                         st.error(f"❌ 提交失败: {res.get('msg')}")
+
 
